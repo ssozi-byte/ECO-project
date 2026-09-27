@@ -1,0 +1,79 @@
+# ---------------------------------------------------------------------------
+# Production-style local deploy of the full stack.
+#   docker compose -f infra/docker-compose.prod.yml up -d --build
+#
+# Uses repo-root Dockerfiles (context = repo root), a dedicated volume,
+# an internal network for DB/Redis, and healthchecks + startup ordering.
+# ---------------------------------------------------------------------------
+name: costopt-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: costopt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-costopt}
+      POSTGRES_DB: costopt
+    volumes:
+      - pgdata-prod:/var/lib/postgresql/data
+    # Not published to the host — only the internal network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U costopt -d costopt"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata-prod:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in your env or .env}
+      JWT_EXPIRES_IN: 7d
+      DATABASE_URL: postgresql://costopt:${POSTGRES_PASSWORD:-costopt}@postgres:5432/costopt?schema=public
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "${API_PORT:-4000}:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NODE_ENV: production
+      # Browser calls the API through the host port, so use the published host.
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata-prod:
+  redisdata-prod:

@@ -1,0 +1,30 @@
+{
+  "name": "costopt-saas",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/verify-swc.js || true",
+    "dev": "npm run dev --workspace @costopt/api & npm run dev --workspace @costopt/web & wait",
+    "dev:api": "npm run dev --workspace @costopt/api",
+    "dev:web": "npm run dev --workspace @costopt/web",
+    "build": "npm run build --workspace @costopt/shared && npm run build --workspace @costopt/api && npm run build --workspace @costopt/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:migrate": "npm run db:migrate --workspace @costopt/api",
+    "db:seed": "npm run db:seed --workspace @costopt/api",
+    "db:generate": "npm run db:generate --workspace @costopt/api",
+    "verify:swc": "node scripts/verify-swc.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "allowScripts": {
+    "prisma": true,
+    "@prisma/client": true,
+    "@prisma/engines": true
+  }
+}

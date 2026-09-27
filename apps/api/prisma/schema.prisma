@@ -1,0 +1,226 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  ANALYST
+  VIEWER
+}
+
+enum IngestionBatchStatus {
+  PENDING
+  PARSING
+  NORMALIZING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum RecommendationType {
+  IDLE_RESOURCE
+  RIGHTSIZING
+  SPEND_ANOMALY
+}
+
+enum RecommendationStatus {
+  OPEN
+  ACCEPTED
+  REJECTED
+  IMPLEMENTED
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  users             Membership[]
+  invites           OrganizationInvite[]
+  services          Service[]
+  ingestionBatches  IngestionBatch[]
+  recommendations   Recommendation[]
+  auditLogs         AuditLog[]
+
+  @@index([name])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+
+  memberships Membership[]
+}
+
+model Membership {
+  id             String @id @default(cuid())
+  userId         String
+  organizationId String
+  role           Role   @default(VIEWER)
+  createdAt      DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+model OrganizationInvite {
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String
+  role           Role
+  token          String   @unique @default(cuid())
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, email])
+}
+
+// Cost dimension hierarchy: Organization -> Service
+model Service {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  costLines       NormalizedCostLine[]
+  recommendations Recommendation[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model IngestionBatch {
+  id             String               @id @default(cuid())
+  organizationId String
+  fileName       String
+  contentHash    String
+  byteSize       Int
+  status         IngestionBatchStatus @default(PENDING)
+  totalLines     Int                  @default(0)
+  validLines     Int                  @default(0)
+  quarantinedLines Int                @default(0)
+  error          String?
+  createdAt      DateTime             @default(now())
+  completedAt    DateTime?
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rawLines         RawBillingLine[]
+  normalizedLines  NormalizedCostLine[]
+
+  @@unique([organizationId, contentHash])
+  @@index([organizationId, status])
+}
+
+// Original parsed rows kept for lineage / reprocessing
+model RawBillingLine {
+  id        String  @id @default(cuid())
+  batchId   String
+  lineNumber Int
+  payload   Json
+  error     String?
+
+  batch IngestionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+}
+
+model NormalizedCostLine {
+  id             String   @id @default(cuid())
+  organizationId String
+  batchId        String
+  serviceId      String?
+  lineNumber     Int
+  timeBucket     DateTime // day bucket, UTC
+  resourceKey    String // e.g. instance id, sku
+  resourceType   String?
+  region         String?
+  amount         Decimal  @db.Decimal(18, 6)
+  currency       String   @default("USD")
+  tags           Json?
+
+  batch   IngestionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  service Service?       @relation(fields: [serviceId], references: [id])
+
+  @@unique([batchId, lineNumber])
+  @@index([organizationId, timeBucket])
+  @@index([organizationId, serviceId, timeBucket])
+  @@index([resourceKey])
+}
+
+model RecommendationRuleVersion {
+  id        String   @id @default(cuid())
+  version   Int
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  recommendations Recommendation[]
+
+  @@unique([version])
+}
+
+model Recommendation {
+  id                String               @id @default(cuid())
+  organizationId    String
+  serviceId         String?
+  ruleVersionId     String
+  type              RecommendationType
+  title             String
+  description       String
+  resourceKey       String
+  expectedMonthlySavings Decimal           @db.Decimal(18, 2)
+  currency          String               @default("USD")
+  confidence        Float // 0..1
+  inputs            Json // explainability: thresholds, observations
+  status            RecommendationStatus @default(OPEN)
+  createdAt         DateTime             @default(now())
+
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  service      Service?                 @relation(fields: [serviceId], references: [id])
+  ruleVersion  RecommendationRuleVersion @relation(fields: [ruleVersionId], references: [id])
+  actions      RecommendationAction[]
+
+  @@unique([organizationId, type, resourceKey, ruleVersionId])
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+}
+
+model RecommendationAction {
+  id               String   @id @default(cuid())
+  recommendationId String
+  userId           String
+  action           String // ACCEPTED | REJECTED | IMPLEMENTED
+  note             String?
+  createdAt        DateTime @default(now())
+
+  recommendation Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  @@index([recommendationId])
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?
+  action         String
+  detail         Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+}
